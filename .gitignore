@@ -7,6 +7,8 @@
 files/*
 swagger-*
 output/*
+dist/*
+bin/*
 # Test binary, built with `go test -c`
 *.test
 
@@ -15,3 +17,9 @@ output/*
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
+.vscode/
+test/testdata/swagger/*
+kubepugImagerefs
+/coverage.out
+/coverage.lcov
+docs/data/data.json

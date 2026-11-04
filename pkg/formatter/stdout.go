@@ -2,47 +2,113 @@ package formatter
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/fatih/color"
-	"github.com/rikatz/kubepug/pkg/results"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/kubepug/kubepug/pkg/results"
 )
 
-type stdout struct{}
+const (
+	footer = "Kubepug validates the APIs using Kubernetes markers. To know what are the deprecated and deleted APIS it checks, please go to https://kubepug.xyz/status/"
+)
 
-func newSTDOUTFormatter() Formatter {
-	return &stdout{}
+type stdout struct {
+	plain bool
 }
 
-var gvColor = color.New(color.FgHiBlack).Add(color.Bold).SprintFunc()
-var resourceColor = color.New(color.FgRed).Add(color.Bold).SprintFunc()
-var globalColor = color.New(color.FgBlue).Add(color.Bold).SprintFunc()
-var namespaceColor = color.New(color.FgCyan).Add(color.Bold).SprintFunc()
-var errorColor = color.New(color.FgWhite).Add(color.BgRed).Add(color.Bold).SprintFunc()
-var locationColor = color.New(color.FgHiMagenta).Add(color.Bold).SprintFunc()
+func newSTDOUTFormatter(plain bool) Formatter {
+	return &stdout{
+		plain: plain,
+	}
+}
 
-func (f *stdout) Output(results results.Result) ([]byte, error) {
-	s := fmt.Sprintf("%s:\n%s:\n\n", resourceColor("RESULTS"), resourceColor("Deprecated APIs"))
-	for _, api := range results.DeprecatedAPIs {
-		s = fmt.Sprintf("%s%s found in %s/%s\n", s, resourceColor(api.Kind), gvColor(api.Group), gvColor(api.Version))
-		if api.Description != "" {
-			s = fmt.Sprintf("%s\t ├─ %s\n", s, api.Description)
+var (
+	gvColor        = color.New(color.FgHiBlack).Add(color.Bold).SprintFunc()
+	resourceColor  = color.New(color.FgRed).Add(color.Bold).SprintFunc()
+	globalColor    = color.New(color.FgBlue).Add(color.Bold).SprintFunc()
+	namespaceColor = color.New(color.FgCyan).Add(color.Bold).SprintFunc()
+	errorColor     = color.New(color.FgWhite).Add(color.BgRed).Add(color.Bold).SprintFunc()
+	locationColor  = color.New(color.FgHiMagenta).Add(color.Bold).SprintFunc()
+)
+
+func (f *stdout) Output(data results.Result) ([]byte, error) {
+	color.NoColor = f.plain
+
+	s := sliceBuilder{}
+	if len(data.DeprecatedAPIs) > 0 {
+		s.add(resourceColor("RESULTS"), ":\n", resourceColor("Deprecated APIs"), ":\n")
+
+		for _, api := range data.DeprecatedAPIs {
+			s.add(resourceColor(api.Kind), " found in ", gvColor(api.Group), "/", gvColor(api.Version), "\n")
+
+			if api.K8sVersion != "" && api.K8sVersion != "unknown" {
+				s.add("\t ├─ ", namespaceColor("Deprecated at:"), " ", api.K8sVersion, "\n")
+			}
+
+			if api.Replacement != nil {
+				s.add("\t ├─ ", namespaceColor("Replacement:"), " ", api.Replacement.Group, "/", api.Replacement.Version, "/", api.Replacement.Kind, "\n")
+			}
+
+			if api.Description != "" {
+				s.add("\t ├─ ", strings.ReplaceAll(api.Description, "\n", ""), "\n")
+			}
+
+			s.addItems(api.Items)
 		}
-		items := stdoutListItems(api.Items)
-		s = fmt.Sprintf("%s%s\n", s, items)
 	}
-	s = fmt.Sprintf("%s\n%s:\n\n", s, resourceColor("Deleted APIs"))
-	for _, api := range results.DeletedAPIs {
-		s = fmt.Sprintf("%s%s found in %s/%s\n", s, resourceColor(api.Kind), gvColor(api.Group), gvColor(api.Version))
-		s = fmt.Sprintf("%s\t ├─ %s\n", s, errorColor("API REMOVED FROM THE CURRENT VERSION AND SHOULD BE MIGRATED IMMEDIATELY!!"))
-		items := stdoutListItems(api.Items)
-		s = fmt.Sprintf("%s%s\n", s, items)
+
+	if len(data.DeletedAPIs) > 0 {
+		s.add("\n", resourceColor("Deleted APIs"), ":\n")
+		s.add("\t ", errorColor("APIs REMOVED FROM THE CURRENT VERSION AND SHOULD BE MIGRATED IMMEDIATELY!!"), "\n")
+
+		for _, api := range data.DeletedAPIs {
+			s.add(resourceColor(api.Kind), " found in ", gvColor(api.Group), "/", gvColor(api.Version), "\n")
+
+			if api.K8sVersion != "" && api.K8sVersion != "unknown" {
+				s.add("\t ├─ ", namespaceColor("Deleted at:"), " ", api.K8sVersion, "\n")
+			}
+
+			if api.Replacement != nil {
+				s.add("\t ├─ ", namespaceColor("Replacement:"), " ", api.Replacement.Group, "/", api.Replacement.Version, "/", api.Replacement.Kind, "\n")
+			}
+
+			if api.Description != "" {
+				s.add("\t ├─ ", strings.ReplaceAll(api.Description, "\n", ""), "\n")
+			}
+
+			s.addItems(api.Items)
+		}
 	}
-	return []byte(s), nil
+
+	if len(data.DeletedAPIs) == 0 && len(data.DeprecatedAPIs) == 0 {
+		s.add("\nNo deprecated or deleted APIs found")
+	}
+
+	s.add("\n\n", footer, "\n")
+
+	out := s.String()
+	if f.plain {
+		out = strings.ReplaceAll(out, "\t", "")
+	}
+
+	return []byte(out), nil
 }
 
-func stdoutListItems(items []results.Item) string {
-	s := ""
+// sliceBuilder is a String Builder that accepts any number of strings at once for ergonomics.
+type sliceBuilder struct {
+	strings.Builder
+}
+
+func (b *sliceBuilder) add(strs ...string) {
+	for _, s := range strs {
+		// strings.Builder.WriteString() error is always nil and can be ignored.
+		b.WriteString(s)
+	}
+}
+
+func (b *sliceBuilder) addItems(items []results.Item) {
 	for _, i := range items {
 		var fileLocation string
 		if i.Location != "" {
@@ -53,10 +119,11 @@ func stdoutListItems(items []results.Item) string {
 			if i.Namespace == "" {
 				i.Namespace = metav1.NamespaceDefault
 			}
-			s = fmt.Sprintf("%s\t\t-> %s: %s %s %s %s\n", s, namespaceColor(i.Scope), i.ObjectName, namespaceColor("namespace:"), i.Namespace, fileLocation)
+
+			b.add("\t\t-> ", namespaceColor(i.Scope), ": ", i.ObjectName, " ", namespaceColor("namespace:"), " ", i.Namespace, " ", fileLocation, "\n")
 		} else {
-			s = fmt.Sprintf("%s\t\t-> %s: %s %s\n", s, globalColor(i.Scope), i.ObjectName, fileLocation)
+			b.add("\t\t-> ", globalColor(i.Scope), ": ", i.ObjectName, " ", fileLocation, "\n")
 		}
 	}
-	return s
+	b.add("\n")
 }
